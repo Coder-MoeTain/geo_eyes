@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-samples", type=int, default=0, help="Quickstart subset size across all sources")
     args = parser.parse_args()
 
     sources: list[str] = []
@@ -113,6 +114,8 @@ def main():
             str(args.val_ratio),
             "--seed",
             str(args.seed),
+            "--max-samples",
+            str(args.max_samples),
         ]
     )
     print({"prepared_dataset": Path(args.output).resolve().as_posix(), "sources": sources})

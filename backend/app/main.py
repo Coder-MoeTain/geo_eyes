@@ -16,6 +16,9 @@ from app.security import hash_password
 
 app = FastAPI(title=settings.project_name, version="1.0.0")
 
+if settings.env.lower() != "development" and settings.secret_key == "change-me":
+    raise RuntimeError("JWT_SECRET must be changed in non-development environments.")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_allowed_origins(),
@@ -99,8 +102,12 @@ async def unhandled_exception_handler(_, exc: Exception):
 
 @app.on_event("startup")
 def ensure_default_admin():
+    if not settings.default_admin_enabled:
+        return
     db: Session = SessionLocal()
     try:
+        if not settings.default_admin_username or not settings.default_admin_email or not settings.default_admin_password:
+            return
         existing = db.query(User).filter(User.username == settings.default_admin_username).one_or_none()
         if not existing:
             db.add(

@@ -325,14 +325,17 @@ async def detect_coordinate(
     active = db.query(AIModel).filter(AIModel.active.is_(True)).first()
     ensure_active_model_or_error(active)
     enforce_rate_limit("detect", window=60, max_calls=120)
-    scene = await search_stac_scene(
-        payload.latitude,
-        payload.longitude,
-        payload.cloud_max,
-        payload.provider,
-        payload.start_date,
-        payload.end_date,
-    )
+    try:
+        scene = await search_stac_scene(
+            payload.latitude,
+            payload.longitude,
+            payload.cloud_max,
+            payload.provider,
+            payload.start_date,
+            payload.end_date,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not scene:
         raise HTTPException(status_code=404, detail="No satellite scenes found for the requested coordinates/time range.")
     if scene.get("suitable_for_aircraft_detection") is False:
@@ -432,7 +435,10 @@ async def get_satellite_image(
     _: User = Depends(get_current_user),
 ):
     enforce_rate_limit("satellite-image", window=60, max_calls=120)
-    scene = await search_stac_scene(latitude, longitude, cloud_max, provider, start_date, end_date)
+    try:
+        scene = await search_stac_scene(latitude, longitude, cloud_max, provider, start_date, end_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not scene:
         raise HTTPException(status_code=404, detail="No scene found for requested STAC filters.")
     return SatelliteImageResponse(

@@ -44,8 +44,6 @@ const detect = async () => {
           <option value="sentinel-2">Sentinel-2</option>
           <option value="landsat">Landsat</option>
           <option value="all">All (STAC)</option>
-          <option value="uploaded">Uploaded GeoTIFF</option>
-          <option value="openaerialmap">OpenAerialMap</option>
         </select>
         <div>
           <label class="text-xs text-slate-300">Cloud Cover Max: {{ cloudMax }}%</label>

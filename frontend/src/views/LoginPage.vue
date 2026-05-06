@@ -5,8 +5,8 @@ import { useIntelStore } from "../stores/intel";
 
 const store = useIntelStore();
 const router = useRouter();
-const username = ref("admin");
-const password = ref("admin123");
+const username = ref("");
+const password = ref("");
 
 const submit = async () => {
   await store.login(username.value, password.value);

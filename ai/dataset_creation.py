@@ -99,6 +99,7 @@ def build_dataset(
     train_ratio: float,
     val_ratio: float,
     seed: int,
+    max_samples: int | None = None,
 ):
     if train_ratio <= 0 or val_ratio <= 0 or train_ratio + val_ratio >= 1:
         raise ValueError("train_ratio and val_ratio must be > 0 and train+val < 1")
@@ -107,6 +108,10 @@ def build_dataset(
     pairs = collect_pairs(source_roots)
     if not pairs:
         raise ValueError("no valid image/label pairs found")
+    if max_samples is not None and max_samples > 0:
+        pairs = pairs[:max_samples]
+        if not pairs:
+            raise ValueError("max_samples filtering produced zero pairs")
 
     make_structure(out_root)
     train, val, test = split_pairs(pairs, train_ratio, val_ratio, seed)
@@ -148,6 +153,7 @@ def main():
     parser.add_argument("--train-ratio", type=float, default=0.7)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-samples", type=int, default=0, help="Limit total pair count for quick training subsets")
     args = parser.parse_args()
 
     stats = build_dataset(
@@ -157,6 +163,7 @@ def main():
         train_ratio=args.train_ratio,
         val_ratio=args.val_ratio,
         seed=args.seed,
+        max_samples=(args.max_samples if args.max_samples > 0 else None),
     )
     print(json.dumps(stats, indent=2))
 

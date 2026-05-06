@@ -10,9 +10,10 @@ class Settings(BaseSettings):
     env: str = "development"
     secret_key: str = Field(default="change-me", alias="JWT_SECRET")
     access_token_expire_minutes: int = 1440
-    default_admin_username: str = "admin"
-    default_admin_email: str = "admin@geoeye.local"
-    default_admin_password: str = "admin123"
+    default_admin_enabled: bool = False
+    default_admin_username: str = ""
+    default_admin_email: str = ""
+    default_admin_password: str = ""
     rate_limit_redis_prefix: str = "geoeye:rl"
     cors_allowed_origins_json: str = '["http://localhost:5173","http://127.0.0.1:5173"]'
     cors_allow_credentials: bool = True

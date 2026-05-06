@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     iou_merge_threshold: float = 0.45
     min_bbox_px: int = 6
     max_bbox_px: int = 5000
+    # Ultralytics device: "0", "cuda:0", or "cpu"
+    yolo_device: str = Field(default="0", alias="YOLO_DEVICE")
 
     @property
     def database_url(self) -> str:

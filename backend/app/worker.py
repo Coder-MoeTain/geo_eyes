@@ -1,6 +1,10 @@
 import asyncio
+import os
+import re
 import subprocess
 import sys
+from datetime import datetime
+from pathlib import Path
 
 from celery import Celery
 from sqlalchemy import text
@@ -127,14 +131,41 @@ def acquire_and_detect(
 
 
 @celery_app.task(name="tasks.train_model")
-def train_model(dataset_yaml: str, epochs: int, img_size: int, batch_size: int, model: str, device: str = "cpu"):
+def train_model(
+    dataset_yaml: str,
+    epochs: int,
+    img_size: int,
+    batch_size: int,
+    model: str,
+    device: str = "0",
+    training_method: str = "yolov8-supervised",
+):
     db: Session = SessionLocal()
+    task_id = train_model.request.id
     try:
+        if training_method != "yolov8-supervised":
+            raise RuntimeError(f"Unsupported training method: {training_method}")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        training_script = repo_root / "ai" / "training.py"
+        runs_root = repo_root / "data" / "runs" / "geoeye"
+        runs_root.mkdir(parents=True, exist_ok=True)
+        run_name = f"yolov8-aircraft-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}"
+        dataset_yaml_path = Path(dataset_yaml)
+        if not dataset_yaml_path.is_absolute():
+            dataset_yaml_path = repo_root / dataset_yaml_path
+        dataset_yaml_path = dataset_yaml_path.resolve()
+
+        _set_job_progress(db, task_id, "running", 0.05, "validating training inputs")
+        if not dataset_yaml_path.exists():
+            raise RuntimeError(f"Dataset yaml not found: {dataset_yaml_path}")
+
+        _set_job_progress(db, task_id, "running", 0.1, "starting training process")
         cmd = [
             sys.executable,
-            "/ai/training.py",
+            str(training_script),
             "--data-yaml",
-            dataset_yaml,
+            str(dataset_yaml_path),
             "--model",
             model,
             "--epochs",
@@ -146,25 +177,74 @@ def train_model(dataset_yaml: str, epochs: int, img_size: int, batch_size: int, 
             "--device",
             device,
             "--project",
-            "/data/runs/geoeye",
+            str(runs_root),
             "--name",
-            "yolov8-aircraft",
+            run_name,
         ]
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr[-1000:])
-        weights_path = "/data/runs/geoeye/yolov8-aircraft/weights/best.pt"
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        epoch_re = re.compile(r"\b(\d+)\s*/\s*(\d+)\b")
+        output_tail: list[str] = []
+        max_tail = 120
+        for raw_line in proc.stdout or []:
+            line = raw_line.strip()
+            if not line:
+                continue
+            output_tail.append(line)
+            if len(output_tail) > max_tail:
+                output_tail = output_tail[-max_tail:]
+            match = epoch_re.search(line)
+            if match:
+                current_epoch = int(match.group(1))
+                total_epochs = max(int(match.group(2)), 1)
+                # Keep 10% buffer for artifact registration after training loop.
+                progress = min(0.9, 0.1 + (current_epoch / total_epochs) * 0.8)
+                _set_job_progress(db, task_id, "running", progress, f"epoch {current_epoch}/{total_epochs}")
+        return_code = proc.wait()
+        if return_code != 0:
+            raise RuntimeError("\n".join(output_tail[-20:]) or "Training process failed.")
+
+        _set_job_progress(db, task_id, "running", 0.93, "registering trained model")
+        weights_path = str(runs_root / run_name / "weights" / "best.pt")
+        if not os.path.exists(weights_path):
+            raise RuntimeError(f"Training finished but best.pt not found: {weights_path}")
         row = create_ai_model(
             db,
-            name="yolov8-aircraft",
+            name=run_name,
             version="v1",
             weights_path=weights_path,
-            metrics={"train_stdout_tail": proc.stdout[-1000:]},
+            metrics={
+                "training_method": training_method,
+                "dataset_yaml": str(dataset_yaml_path),
+                "epochs": epochs,
+                "img_size": img_size,
+                "batch_size": batch_size,
+                "base_model": model,
+                "device": device,
+                "train_stdout_tail": "\n".join(output_tail[-20:]),
+            },
             active=True,
         )
         db.commit()
+        _set_job_progress(db, task_id, "completed", 1.0, "training completed")
         write_audit_log(db, "train_model", "/tasks/train_model", "success", details={"model_id": row.id})
-        return {"status": "completed", "model_id": row.id, "weights_path": weights_path}
+        return {
+            "status": "completed",
+            "training_method": training_method,
+            "model_id": row.id,
+            "model_name": run_name,
+            "weights_path": weights_path,
+            "base_model": model,
+        }
+    except Exception as exc:
+        db.rollback()
+        _set_job_progress(db, task_id, "failed", 1.0, str(exc))
+        raise
     finally:
         db.close()
 

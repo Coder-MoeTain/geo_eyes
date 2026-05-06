@@ -26,3 +26,23 @@ def test_api_contracts_for_airport_change_and_review():
     assert '@router.get("/airports/{airport_id}/detections"' in api
     assert '@router.patch("/detections/{detection_id}/review"' in api
     assert "require_any_role" in api
+
+
+def test_create_satellite_image_maps_footprint_column():
+    """Regression: ORM attribute is `footprint` (DB column `bounds`); `bounds=` was ignored."""
+    crud = Path("app/db/crud.py").read_text(encoding="utf-8")
+    assert "footprint=WKTElement(bounds_wkt" in crud
+    assert "create_satellite_image" in crud
+    assert "bounds=WKTElement" not in crud
+
+
+def test_detection_static_routes_registered_before_id_route():
+    """FastAPI matches in order; geojson/export must not be parsed as detection_id."""
+    api = Path("app/api.py").read_text(encoding="utf-8")
+    idx_list = api.find('@router.get("/detections"')
+    idx_geojson = api.find('@router.get("/detections/geojson"')
+    idx_export = api.find('@router.get("/detections/export.csv"')
+    idx_detail = api.find('@router.get("/detections/{detection_id}"')
+    assert idx_list != -1 and idx_geojson != -1 and idx_export != -1 and idx_detail != -1
+    assert idx_list < idx_geojson < idx_detail
+    assert idx_list < idx_export < idx_detail

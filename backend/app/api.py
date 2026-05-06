@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import PlainTextResponse
+from kombu.exceptions import OperationalError as KombuOperationalError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from shapely.geometry import box
@@ -377,24 +378,28 @@ def task_status(
     job = db.query(DetectionJob).filter(DetectionJob.task_id == task_id).one_or_none()
     cjob = db.query(ChangeDetectionJob).filter(ChangeDetectionJob.task_id == task_id).one_or_none()
     if job:
-        job.status = result.status.lower()
         if result.ready():
+            job.status = "completed" if result.successful() else "failed"
             job.progress = 1.0
             job.result = result.result if isinstance(result.result, dict) else {"result": str(result.result)}
             job.message = "completed" if result.successful() else "failed"
+        elif not job.status or job.status in {"pending", "queued"}:
+            job.status = result.status.lower()
         db.add(job)
         db.commit()
     if cjob:
-        cjob.status = result.status.lower()
         if result.ready():
+            cjob.status = "completed" if result.successful() else "failed"
             cjob.progress = 1.0
             cjob.result = result.result if isinstance(result.result, dict) else {"result": str(result.result)}
             cjob.message = "completed" if result.successful() else "failed"
+        elif not cjob.status or cjob.status in {"pending", "queued"}:
+            cjob.status = result.status.lower()
         db.add(cjob)
         db.commit()
     return {
         "task_id": task_id,
-        "status": result.status.lower(),
+        "status": (job.status if job else (cjob.status if cjob else result.status.lower())),
         "progress": (job.progress if job else (cjob.progress if cjob else 0.0)),
         "message": (job.message if job else (cjob.message if cjob else None)),
         "result": result.result if result.ready() else None,
@@ -491,6 +496,33 @@ def get_detections(
     return {"total": len(items), "items": items}
 
 
+@router.get("/detections/geojson", tags=["detection"])
+def detections_geojson(db: Session = Depends(get_db), _: User = Depends(get_current_user), limit: int = 1000):
+    rows = db.execute(
+        text("SELECT id, class_name, confidence, ST_AsGeoJSON(geo_polygon) AS g FROM detections ORDER BY timestamp DESC LIMIT :limit"),
+        {"limit": limit},
+    ).mappings().all()
+    return {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": json.loads(r["g"]), "properties": {"id": r["id"], "class_name": r["class_name"], "confidence": r["confidence"]}}
+            for r in rows
+            if r["g"]
+        ],
+    }
+
+
+@router.get("/detections/export.csv", tags=["detection"])
+def detections_export_csv(db: Session = Depends(get_db), _: User = Depends(require_any_role(["viewer", "analyst"]))):
+    rows = db.execute(
+        text("SELECT id, class_name, confidence, timestamp FROM detections ORDER BY timestamp DESC LIMIT 10000")
+    ).mappings().all()
+    lines = ["id,class_name,confidence,timestamp"]
+    for r in rows:
+        lines.append(f'{r["id"]},{r["class_name"]},{r["confidence"]},{r["timestamp"]}')
+    return PlainTextResponse("\n".join(lines), media_type="text/csv")
+
+
 @router.get("/detections/{detection_id}", tags=["detection"])
 def get_detection_detail(detection_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     row = db.execute(
@@ -548,33 +580,6 @@ def review_detection(
     return {"id": detection_id, "qa_status": status, "false_positive": false_positive}
 
 
-@router.get("/detections/geojson", tags=["detection"])
-def detections_geojson(db: Session = Depends(get_db), _: User = Depends(get_current_user), limit: int = 1000):
-    rows = db.execute(
-        text("SELECT id, class_name, confidence, ST_AsGeoJSON(geo_polygon) AS g FROM detections ORDER BY timestamp DESC LIMIT :limit"),
-        {"limit": limit},
-    ).mappings().all()
-    return {
-        "type": "FeatureCollection",
-        "features": [
-            {"type": "Feature", "geometry": json.loads(r["g"]), "properties": {"id": r["id"], "class_name": r["class_name"], "confidence": r["confidence"]}}
-            for r in rows
-            if r["g"]
-        ],
-    }
-
-
-@router.get("/detections/export.csv", tags=["detection"])
-def detections_export_csv(db: Session = Depends(get_db), _: User = Depends(require_any_role(["viewer", "analyst"]))):
-    rows = db.execute(
-        text("SELECT id, class_name, confidence, timestamp FROM detections ORDER BY timestamp DESC LIMIT 10000")
-    ).mappings().all()
-    lines = ["id,class_name,confidence,timestamp"]
-    for r in rows:
-        lines.append(f'{r["id"]},{r["class_name"]},{r["confidence"]},{r["timestamp"]}')
-    return PlainTextResponse("\n".join(lines), media_type="text/csv")
-
-
 @router.get("/aircraft-statistics")
 def aircraft_statistics(
     db: Session = Depends(get_db),
@@ -600,12 +605,54 @@ def train_model(
     db: Session = Depends(get_db),
 ):
     enforce_rate_limit("train-model", window=300, max_calls=5)
-    task = celery_app.send_task(
-        "tasks.train_model",
-        kwargs=payload.model_dump(),
+    try:
+        task = celery_app.send_task(
+            "tasks.train_model",
+            kwargs=payload.model_dump(),
+        )
+    except KombuOperationalError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Training queue unavailable. Start Redis and Celery worker, then retry.",
+        ) from exc
+    db.add(
+        DetectionJob(
+            task_id=task.id,
+            job_type="training",
+            status="pending",
+            progress=0.0,
+            current_step="queued",
+            message=f"Queued {payload.training_method} training ({payload.model})",
+            created_by_user_id=user.id,
+        )
     )
+    db.commit()
     write_audit_log(db, "train_model", "/api/v1/train-model", "queued", user=user, details={"task_id": task.id})
     return GenericTaskResponse(task_id=task.id)
+
+
+@router.get("/training/options", tags=["models"])
+def training_options(_: User = Depends(require_any_role(["model_manager"]))):
+    return {
+        "methods": [
+            {
+                "id": "yolov8-supervised",
+                "name": "YOLOv8 Supervised",
+                "description": "Standard supervised object-detection training using Ultralytics YOLOv8.",
+            }
+        ],
+        "base_models": [
+            {"id": "yolov8n.pt", "family": "YOLOv8", "size": "nano"},
+            {"id": "yolov8s.pt", "family": "YOLOv8", "size": "small"},
+            {"id": "yolov8m.pt", "family": "YOLOv8", "size": "medium"},
+            {"id": "yolov8l.pt", "family": "YOLOv8", "size": "large"},
+            {"id": "yolov8x.pt", "family": "YOLOv8", "size": "xlarge"},
+        ],
+        "devices": [
+            {"id": "0", "label": "GPU 0"},
+            {"id": "cpu", "label": "CPU"},
+        ],
+    }
 
 
 @router.get("/models")

@@ -85,6 +85,7 @@ def run_yolo_geotiff_inference(
     tile_size: int = 1024,
     overlap: int = 128,
     conf_threshold: float = 0.25,
+    device: str | int | None = None,
 ) -> list[dict[str, Any]]:
     if YOLO is None:
         raise RuntimeError("ultralytics is not available")
@@ -95,13 +96,14 @@ def run_yolo_geotiff_inference(
     if not Path(chosen_model).exists():
         raise FileNotFoundError(f"YOLO model not found: {chosen_model}")
 
+    infer_device = device if device is not None else settings.yolo_device
     model = YOLO(chosen_model)
     per_class_thr = detection_thresholds()
     is_geotiff = path.suffix.lower() in {".tif", ".tiff"}
     boxes_all: list[dict[str, Any]] = []
 
     if not is_geotiff:
-        result = model.predict(source=str(path), conf=conf_threshold, verbose=False)[0]
+        result = model.predict(source=str(path), conf=conf_threshold, device=infer_device, verbose=False)[0]
         h, w = cv2.imread(str(path)).shape[:2]
         for box in result.boxes:
             x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
@@ -131,7 +133,7 @@ def run_yolo_geotiff_inference(
                     arr = src.read([1, 2, 3], window=win, boundless=True, fill_value=0)
                     tile = np.transpose(arr, (1, 2, 0))
                     tile = np.clip(tile, 0, 255).astype(np.uint8)
-                    result = model.predict(source=tile, conf=conf_threshold, verbose=False)[0]
+                    result = model.predict(source=tile, conf=conf_threshold, device=infer_device, verbose=False)[0]
                     for box in result.boxes:
                         tx1, ty1, tx2, ty2 = [float(v) for v in box.xyxy[0].tolist()]
                         x1, y1, x2, y2 = tx1 + x, ty1 + y, tx2 + x, ty2 + y

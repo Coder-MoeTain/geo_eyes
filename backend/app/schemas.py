@@ -64,12 +64,13 @@ class SatelliteImageResponse(BaseModel):
 
 
 class TrainModelRequest(BaseModel):
+    training_method: str = "yolov8-supervised"
     dataset_yaml: str = "data/datasets/aircraft/data.yaml"
     epochs: int = 20
     img_size: int = 1024
     batch_size: int = 8
     model: str = "yolov8m.pt"
-    device: str = "cpu"
+    device: str = "0"
 
 
 class UploadImageResponse(BaseModel):

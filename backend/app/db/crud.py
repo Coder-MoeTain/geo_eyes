@@ -33,7 +33,7 @@ def create_satellite_image(
         acquisition_date=acquisition_date,
         cloud_cover=cloud_cover,
         resolution_m=resolution_m,
-        bounds=WKTElement(bounds_wkt, srid=4326) if bounds_wkt else None,
+        footprint=WKTElement(bounds_wkt, srid=4326) if bounds_wkt else None,
         asset_url=asset_url,
         extra_metadata=metadata,
     )

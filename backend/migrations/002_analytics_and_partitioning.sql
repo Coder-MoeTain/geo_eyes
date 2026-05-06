@@ -30,7 +30,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_airport_activity_summary_airport_id
 -- Partitioned analytics table for high-volume detection history.
 -- The canonical detections table remains the write-source for compatibility.
 CREATE TABLE IF NOT EXISTS detections_partitioned (
-  LIKE detections INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES
+  LIKE detections INCLUDING DEFAULTS
 ) PARTITION BY RANGE (timestamp);
 
 CREATE OR REPLACE FUNCTION ensure_detection_partition(ts timestamp)

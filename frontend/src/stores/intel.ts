@@ -11,6 +11,7 @@ export const useIntelStore = defineStore("intel", {
     stats: null as any,
     heatmap: null as any,
     models: [] as any[],
+    trainingOptions: null as any,
     airports: [] as any[],
     uploadedTileUrl: "",
     latestUpload: null as any,
@@ -93,6 +94,11 @@ export const useIntelStore = defineStore("intel", {
       const { data } = await api.get("/api/v1/models", { headers: this.authHeaders() });
       this.models = data.items || [];
     },
+    async loadTrainingOptions() {
+      const { data } = await api.get("/api/v1/training/options", { headers: this.authHeaders() });
+      this.trainingOptions = data;
+      return data;
+    },
     async activateModel(modelId: number) {
       await api.post(`/api/v1/models/${modelId}/activate`, {}, { headers: this.authHeaders() });
       await this.loadModels();
@@ -151,6 +157,7 @@ export const useIntelStore = defineStore("intel", {
       return data;
     },
     async trainModel(payload: {
+      training_method?: string;
       dataset_yaml: string;
       epochs: number;
       img_size: number;

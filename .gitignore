@@ -1,0 +1,17 @@
+node_modules/
+dist/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+data/uploads/
+data/models/
+data/runs/
+data/tmp/
+*.log
+frontend/node_modules/
+frontend/dist/
+backend/.pytest_cache/
+backend/app/__pycache__/
+backend/tests/__pycache__/
+ai/__pycache__/

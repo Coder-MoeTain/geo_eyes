@@ -1,0 +1,5 @@
+boeing-aircraft
+airbus-aircraft
+medium-aircraft
+cargo-aircraft
+military-aircraft

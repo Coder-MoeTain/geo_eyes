@@ -1,0 +1,40 @@
+ALTER TABLE satellite_images
+  ADD COLUMN IF NOT EXISTS original_file_path TEXT,
+  ADD COLUMN IF NOT EXISTS cog_file_path TEXT,
+  ADD COLUMN IF NOT EXISTS is_cog BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS band_count INT,
+  ADD COLUMN IF NOT EXISTS dtype VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS gsd_m FLOAT,
+  ADD COLUMN IF NOT EXISTS warning TEXT,
+  ADD COLUMN IF NOT EXISTS suitability_score FLOAT;
+
+ALTER TABLE detections
+  ADD COLUMN IF NOT EXISTS qa_status VARCHAR(32) DEFAULT 'pending',
+  ADD COLUMN IF NOT EXISTS false_positive BOOLEAN DEFAULT FALSE,
+  ADD COLUMN IF NOT EXISTS reviewed_by_user_id INT REFERENCES users(id),
+  ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMP;
+
+ALTER TABLE ai_models
+  ADD COLUMN IF NOT EXISTS status VARCHAR(32) DEFAULT 'uploaded';
+
+ALTER TABLE detection_jobs
+  ADD COLUMN IF NOT EXISTS job_type VARCHAR(64) DEFAULT 'detection',
+  ADD COLUMN IF NOT EXISTS current_step VARCHAR(128),
+  ADD COLUMN IF NOT EXISTS error_code VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS error_message TEXT,
+  ADD COLUMN IF NOT EXISTS created_by_user_id INT REFERENCES users(id),
+  ADD COLUMN IF NOT EXISTS started_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP;
+
+ALTER TABLE change_detection_jobs
+  ADD COLUMN IF NOT EXISTS job_type VARCHAR(64) DEFAULT 'change_detection',
+  ADD COLUMN IF NOT EXISTS current_step VARCHAR(128),
+  ADD COLUMN IF NOT EXISTS error_code VARCHAR(64),
+  ADD COLUMN IF NOT EXISTS error_message TEXT,
+  ADD COLUMN IF NOT EXISTS created_by_user_id INT REFERENCES users(id),
+  ADD COLUMN IF NOT EXISTS started_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS finished_at TIMESTAMP;
+
+CREATE INDEX IF NOT EXISTS idx_detections_qa_status ON detections(qa_status);
+CREATE INDEX IF NOT EXISTS idx_detections_model_id ON detections(model_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON detection_jobs(status);

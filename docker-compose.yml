@@ -67,7 +67,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: celery -A app.worker.celery_app worker --loglevel=info
+    # CPU worker: does NOT consume GPU training queue.
+    command: celery -A app.worker.celery_app worker --loglevel=info -Q detect,change,import
     env_file:
       - .env
     depends_on:
@@ -127,7 +128,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.gpu
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1
+    # GPU worker: consumes GPU training queue.
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=1 -Q detect,train_gpu,change,import
     env_file:
       - .env
     depends_on:

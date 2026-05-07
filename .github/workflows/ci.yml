@@ -24,6 +24,9 @@ jobs:
       - name: Backend lint
         working-directory: backend
         run: ruff check app tests
+      - name: Validate backend config (from .env.example)
+        working-directory: backend
+        run: python -m app.core.validate_config --env-file ../.env.example
       - name: Run backend tests
         working-directory: backend
         run: pytest
@@ -55,4 +58,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Validate Docker Compose
-        run: docker compose config
+        run: |
+          cp .env.example .env
+          docker compose config

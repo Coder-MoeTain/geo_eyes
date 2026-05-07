@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 from celery import Celery
+from celery.exceptions import SoftTimeLimitExceeded
+from kombu.exceptions import OperationalError as KombuOperationalError
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -26,6 +28,91 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
 )
 
+# Phase 4: reliability defaults. These can be overridden via Celery configuration
+# if you later adopt a centralized config module.
+celery_app.conf.update(
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    worker_prefetch_multiplier=1,
+    task_track_started=True,
+    task_serializer="json",
+    accept_content=["json"],
+    result_serializer="json",
+    task_routes={
+        "tasks.detect_uploaded": {"queue": "detect"},
+        "tasks.acquire_and_detect": {"queue": "detect"},
+        # GPU-only training queue (consumed by worker-gpu)
+        "tasks.train_model": {"queue": "train_gpu"},
+        "tasks.change_detection": {"queue": "change"},
+        "tasks.import_airports": {"queue": "import"},
+    },
+)
+
+
+def _get_detection_job_status(db: Session, task_id: str) -> str | None:
+    row = db.execute(
+        text("SELECT status FROM detection_jobs WHERE task_id=:task_id"),
+        {"task_id": task_id},
+    ).first()
+    return str(row[0]) if row and row[0] is not None else None
+
+
+def _update_detection_job(
+    db: Session,
+    task_id: str,
+    *,
+    status: str | None = None,
+    progress: float | None = None,
+    current_step: str | None = None,
+    message: str | None = None,
+    error_code: str | None = None,
+    error_message: str | None = None,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+):
+    # Update only provided fields to avoid clobbering data written by API polling.
+    sets: list[str] = []
+    params: dict[str, object] = {"task_id": task_id}
+    if status is not None:
+        sets.append("status=:status")
+        params["status"] = status
+    if progress is not None:
+        sets.append("progress=:progress")
+        params["progress"] = progress
+    if current_step is not None:
+        sets.append("current_step=:current_step")
+        params["current_step"] = current_step
+    if message is not None:
+        sets.append("message=:message")
+        params["message"] = message
+    if error_code is not None:
+        sets.append("error_code=:error_code")
+        params["error_code"] = error_code
+    if error_message is not None:
+        sets.append("error_message=:error_message")
+        params["error_message"] = error_message
+    if started_at is not None:
+        sets.append("started_at=:started_at")
+        params["started_at"] = started_at
+    if finished_at is not None:
+        sets.append("finished_at=:finished_at")
+        params["finished_at"] = finished_at
+
+    if not sets:
+        return
+    db.execute(text(f"UPDATE detection_jobs SET {', '.join(sets)} WHERE task_id=:task_id"), params)
+    db.commit()
+
+
+def _set_job_progress(db: Session, task_id: str, status: str, progress: float, message: str, current_step: str | None = None):
+    _update_detection_job(
+        db,
+        task_id,
+        status=status,
+        progress=progress,
+        message=message,
+        current_step=current_step or message,
+    )
 
 def _set_job_progress(db: Session, task_id: str, status: str, progress: float, message: str):
     db.execute(
@@ -41,8 +128,18 @@ def _set_job_progress(db: Session, task_id: str, status: str, progress: float, m
     db.commit()
 
 
-@celery_app.task(name="tasks.acquire_and_detect")
+@celery_app.task(
+    name="tasks.acquire_and_detect",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+    soft_time_limit=60 * 30,
+    time_limit=60 * 35,
+)
 def acquire_and_detect(
+    self,
     latitude: float,
     longitude: float,
     provider: str,
@@ -53,13 +150,18 @@ def acquire_and_detect(
     model_id: int | None = None,
 ):
     db: Session = SessionLocal()
-    task_id = acquire_and_detect.request.id
+    task_id = self.request.id
     try:
         from datetime import datetime
 
+        status = _get_detection_job_status(db, task_id)
+        if status == "cancelled":
+            return {"status": "cancelled"}
+        _update_detection_job(db, task_id, status="running", started_at=datetime.utcnow(), current_step="started", message="started")
+
         st_start = datetime.fromisoformat(start_date) if start_date else None
         st_end = datetime.fromisoformat(end_date) if end_date else None
-        _set_job_progress(db, task_id, "running", 0.1, "searching imagery")
+        _set_job_progress(db, task_id, "running", 0.1, "searching imagery", current_step="stac_search")
         scene = asyncio.run(
             search_stac_scene(
                 latitude=latitude,
@@ -75,7 +177,7 @@ def acquire_and_detect(
         if scene.get("asset_url"):
             local_name = f"stac_{scene.get('stac_item_id', 'scene')}.tif"
             scene["local_tif_path"] = download_cog_asset(scene["asset_url"], local_name)
-        _set_job_progress(db, task_id, "running", 0.25, "loading model")
+        _set_job_progress(db, task_id, "running", 0.25, "loading model", current_step="load_model")
         if not scene.get("local_tif_path"):
             raise RuntimeError("No downloadable GeoTIFF asset available for selected query")
         active_model = None
@@ -89,7 +191,7 @@ def acquire_and_detect(
             raise RuntimeError("No active aircraft detection model found")
         chosen_model_path = active_model.weights_path
         detections = run_yolo_geotiff_inference(scene.get("local_tif_path"), model_path=chosen_model_path)
-        _set_job_progress(db, task_id, "running", 0.7, "storing detections")
+        _set_job_progress(db, task_id, "running", 0.7, "storing detections", current_step="persist")
         image = create_satellite_image(
             db=db,
             provider=scene["provider"],
@@ -121,17 +223,42 @@ def acquire_and_detect(
             )
             persisted.append(item.id)
         db.commit()
-        _set_job_progress(db, task_id, "completed", 1.0, "completed")
+        _update_detection_job(db, task_id, status="completed", progress=1.0, message="completed", current_step="completed", finished_at=datetime.utcnow())
         return {"scene": scene, "detections": detections, "stored_detection_ids": persisted}
+    except SoftTimeLimitExceeded as exc:
+        db.rollback()
+        _update_detection_job(
+            db,
+            task_id,
+            status="failed",
+            progress=1.0,
+            current_step="timeout",
+            message="timed out",
+            error_code="TIMEOUT",
+            error_message=str(exc),
+            finished_at=datetime.utcnow(),
+        )
+        raise
     except Exception:
         db.rollback()
+        _update_detection_job(db, task_id, status="failed", progress=1.0, current_step="failed", message="failed", error_code="ERROR", error_message="Task failed", finished_at=datetime.utcnow())
         raise
     finally:
         db.close()
 
 
-@celery_app.task(name="tasks.train_model")
+@celery_app.task(
+    name="tasks.train_model",
+    bind=True,
+    autoretry_for=(KombuOperationalError, RuntimeError),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 2},
+    soft_time_limit=60 * 60 * 8,
+    time_limit=60 * 60 * 9,
+)
 def train_model(
+    self,
     dataset_yaml: str,
     epochs: int,
     img_size: int,
@@ -141,8 +268,13 @@ def train_model(
     training_method: str = "yolov8-supervised",
 ):
     db: Session = SessionLocal()
-    task_id = train_model.request.id
+    task_id = self.request.id
     try:
+        status = _get_detection_job_status(db, task_id)
+        if status == "cancelled":
+            return {"status": "cancelled"}
+        _update_detection_job(db, task_id, status="running", started_at=datetime.utcnow(), current_step="started", message="started")
+
         if training_method != "yolov8-supervised":
             raise RuntimeError(f"Unsupported training method: {training_method}")
 
@@ -156,11 +288,11 @@ def train_model(
             dataset_yaml_path = repo_root / dataset_yaml_path
         dataset_yaml_path = dataset_yaml_path.resolve()
 
-        _set_job_progress(db, task_id, "running", 0.05, "validating training inputs")
+        _set_job_progress(db, task_id, "running", 0.05, "validating training inputs", current_step="validate_inputs")
         if not dataset_yaml_path.exists():
             raise RuntimeError(f"Dataset yaml not found: {dataset_yaml_path}")
 
-        _set_job_progress(db, task_id, "running", 0.1, "starting training process")
+        _set_job_progress(db, task_id, "running", 0.1, "starting training process", current_step="train_start")
         cmd = [
             sys.executable,
             str(training_script),
@@ -204,12 +336,12 @@ def train_model(
                 total_epochs = max(int(match.group(2)), 1)
                 # Keep 10% buffer for artifact registration after training loop.
                 progress = min(0.9, 0.1 + (current_epoch / total_epochs) * 0.8)
-                _set_job_progress(db, task_id, "running", progress, f"epoch {current_epoch}/{total_epochs}")
+                _set_job_progress(db, task_id, "running", progress, f"epoch {current_epoch}/{total_epochs}", current_step="train_epoch")
         return_code = proc.wait()
         if return_code != 0:
             raise RuntimeError("\n".join(output_tail[-20:]) or "Training process failed.")
 
-        _set_job_progress(db, task_id, "running", 0.93, "registering trained model")
+        _set_job_progress(db, task_id, "running", 0.93, "registering trained model", current_step="register_model")
         weights_path = str(runs_root / run_name / "weights" / "best.pt")
         if not os.path.exists(weights_path):
             raise RuntimeError(f"Training finished but best.pt not found: {weights_path}")
@@ -231,7 +363,7 @@ def train_model(
             active=True,
         )
         db.commit()
-        _set_job_progress(db, task_id, "completed", 1.0, "training completed")
+        _update_detection_job(db, task_id, status="completed", progress=1.0, message="training completed", current_step="completed", finished_at=datetime.utcnow())
         write_audit_log(db, "train_model", "/tasks/train_model", "success", details={"model_id": row.id})
         return {
             "status": "completed",
@@ -243,18 +375,42 @@ def train_model(
         }
     except Exception as exc:
         db.rollback()
-        _set_job_progress(db, task_id, "failed", 1.0, str(exc))
+        _update_detection_job(
+            db,
+            task_id,
+            status="failed",
+            progress=1.0,
+            message=str(exc),
+            current_step="failed",
+            error_code="ERROR",
+            error_message=str(exc),
+            finished_at=datetime.utcnow(),
+        )
         raise
     finally:
         db.close()
 
 
-@celery_app.task(name="tasks.detect_uploaded")
-def detect_uploaded(image_id: int, image_path: str | None = None):
+@celery_app.task(
+    name="tasks.detect_uploaded",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+    soft_time_limit=60 * 30,
+    time_limit=60 * 35,
+)
+def detect_uploaded(self, image_id: int, image_path: str | None = None):
     db: Session = SessionLocal()
-    task_id = detect_uploaded.request.id
+    task_id = self.request.id
     try:
-        _set_job_progress(db, task_id, "running", 0.1, "loading image metadata")
+        status = _get_detection_job_status(db, task_id)
+        if status == "cancelled":
+            return {"status": "cancelled"}
+        _update_detection_job(db, task_id, status="running", started_at=datetime.utcnow(), current_step="load_image", message="started")
+
+        _set_job_progress(db, task_id, "running", 0.1, "loading image metadata", current_step="load_image")
         if not image_path:
             row = db.execute(
                 text("SELECT asset_url FROM satellite_images WHERE id = :id"),
@@ -263,12 +419,12 @@ def detect_uploaded(image_id: int, image_path: str | None = None):
             if not row or not row[0]:
                 raise RuntimeError("Uploaded image path was not found for detection task")
             image_path = row[0]
-        _set_job_progress(db, task_id, "running", 0.3, "loading model")
+        _set_job_progress(db, task_id, "running", 0.3, "loading model", current_step="load_model")
         active_model = get_active_model(db)
         if not active_model:
             raise RuntimeError("No active aircraft detection model found")
         chosen_model_path = active_model.weights_path
-        _set_job_progress(db, task_id, "running", 0.6, "running inference")
+        _set_job_progress(db, task_id, "running", 0.6, "running inference", current_step="inference")
         detections = run_yolo_geotiff_inference(image_path, model_path=chosen_model_path)
         persisted = []
         for d in detections:
@@ -291,17 +447,27 @@ def detect_uploaded(image_id: int, image_path: str | None = None):
             )
             persisted.append(item.id)
         db.commit()
-        _set_job_progress(db, task_id, "completed", 1.0, "completed")
+        _update_detection_job(db, task_id, status="completed", progress=1.0, message="completed", current_step="completed", finished_at=datetime.utcnow())
         return {"image_id": image_id, "stored_detection_ids": persisted, "count": len(persisted)}
     except Exception:
         db.rollback()
+        _update_detection_job(db, task_id, status="failed", progress=1.0, message="failed", current_step="failed", error_code="ERROR", error_message="Task failed", finished_at=datetime.utcnow())
         raise
     finally:
         db.close()
 
 
-@celery_app.task(name="tasks.import_airports")
-def import_airports_task(csv_path: str):
+@celery_app.task(
+    name="tasks.import_airports",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 3},
+    soft_time_limit=60 * 10,
+    time_limit=60 * 12,
+)
+def import_airports_task(self, csv_path: str):
     db: Session = SessionLocal()
     try:
         inserted = import_ourairports_csv(db, csv_path)
@@ -310,8 +476,17 @@ def import_airports_task(csv_path: str):
         db.close()
 
 
-@celery_app.task(name="tasks.change_detection")
-def change_detection_task(before_image_id: int, after_image_id: int, match_distance_m: float = 40.0):
+@celery_app.task(
+    name="tasks.change_detection",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_jitter=True,
+    retry_kwargs={"max_retries": 2},
+    soft_time_limit=60 * 20,
+    time_limit=60 * 25,
+)
+def change_detection_task(self, before_image_id: int, after_image_id: int, match_distance_m: float = 40.0):
     db: Session = SessionLocal()
     try:
         return spatial_change_detection(db, before_image_id, after_image_id, match_distance_m)

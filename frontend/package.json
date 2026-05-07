@@ -4,11 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0 --port 5173",
-    "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 5173",
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "dev": "npx --no-install vite --host 0.0.0.0 --port 5173",
+    "build": "npx --no-install vite build",
+    "preview": "npx --no-install vite preview --host 0.0.0.0 --port 5173",
+    "test": "npx --no-install vitest run",
+    "typecheck": "npx --no-install tsc --noEmit"
   },
   "dependencies": {
     "axios": "^1.7.7",

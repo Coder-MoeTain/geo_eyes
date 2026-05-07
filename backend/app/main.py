@@ -10,14 +10,17 @@ from sqlalchemy.orm import Session
 
 from app.api import router
 from app.core.config import cors_allowed_origins, settings
+from app.core.validation import validate_settings
 from app.db.session import SessionLocal
 from app.models import User
 from app.security import hash_password
 
 app = FastAPI(title=settings.project_name, version="1.0.0")
 
-if settings.env.lower() != "development" and settings.secret_key == "change-me":
-    raise RuntimeError("JWT_SECRET must be changed in non-development environments.")
+issues = validate_settings(settings)
+if issues and (settings.env or "").lower().strip() not in {"development", "dev"}:
+    msg = "\n".join(f"- [{i.code}] {i.message}" for i in issues)
+    raise RuntimeError(f"Configuration validation failed:\n{msg}")
 
 app.add_middleware(
     CORSMiddleware,

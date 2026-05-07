@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useIntelStore } from "../stores/intel";
 
 const store = useIntelStore();
-const datasetYaml = ref("data/datasets/aircraft/data.yaml");
+const datasetYaml = ref("coco128.yaml");
 const epochs = ref(20);
 const imgSize = ref(1024);
 const batchSize = ref(8);
@@ -68,9 +68,12 @@ onBeforeUnmount(() => stopPolling());
 </script>
 
 <template>
-  <main class="grid grid-cols-1 gap-4 p-4 lg:grid-cols-3">
-    <section class="rounded-xl border border-cyan-900/50 bg-slate-900/60 p-4 lg:col-span-2">
-      <h2 class="mb-3 text-cyan-300">Training Operations</h2>
+  <main class="grid grid-cols-1 gap-4 lg:grid-cols-3">
+    <section class="lg:col-span-2">
+      <h2 class="mb-3 text-cyan-200">Training Operations</h2>
+      <p class="mb-4 text-xs text-slate-200/70">
+        Tip: choose <span class="font-mono text-emerald-200/70">COCO128</span> to auto-download a labeled dataset and validate your GPU training pipeline end-to-end.
+      </p>
       <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
         <select v-model="trainingMethod" class="rounded bg-slate-800 p-2 text-sm md:col-span-2">
           <option
@@ -81,7 +84,19 @@ onBeforeUnmount(() => stopPolling());
             {{ m.name }}
           </option>
         </select>
-        <input v-model="datasetYaml" class="rounded bg-slate-800 p-2 text-sm md:col-span-2" placeholder="dataset yaml path" />
+
+        <div class="md:col-span-2 grid grid-cols-1 gap-2">
+          <select v-model="datasetYaml" class="rounded bg-slate-800 p-2 text-sm">
+            <option
+              v-for="d in store.trainingOptions?.datasets || [{ id: 'coco128.yaml', name: 'COCO128 (auto-download)' }]"
+              :key="d.id"
+              :value="d.id"
+            >
+              {{ d.name }}
+            </option>
+          </select>
+          <input v-model="datasetYaml" class="rounded bg-slate-800 p-2 text-sm" placeholder="dataset yaml path (advanced override)" />
+        </div>
         <input v-model.number="epochs" type="number" class="rounded bg-slate-800 p-2 text-sm" placeholder="epochs" />
         <input v-model.number="imgSize" type="number" class="rounded bg-slate-800 p-2 text-sm" placeholder="image size" />
         <input v-model.number="batchSize" type="number" class="rounded bg-slate-800 p-2 text-sm" placeholder="batch size" />
@@ -101,9 +116,9 @@ onBeforeUnmount(() => stopPolling());
         </select>
       </div>
       <div class="mt-3 flex gap-2">
-        <button class="rounded bg-cyan-700 px-3 py-2 text-sm" @click="startTraining">Start Training Job</button>
-        <button class="rounded bg-slate-700 px-3 py-2 text-sm" @click="poll">Poll Job</button>
-        <button class="rounded bg-slate-700 px-3 py-2 text-sm" @click="isPolling ? stopPolling() : startPolling()">
+        <button class="btn-intel" @click="startTraining">Start Training Job</button>
+        <button class="btn-intel" @click="poll">Poll Job</button>
+        <button class="btn-intel" @click="isPolling ? stopPolling() : startPolling()">
           {{ isPolling ? "Stop Auto Poll" : "Auto Poll" }}
         </button>
       </div>
@@ -113,8 +128,8 @@ onBeforeUnmount(() => stopPolling());
       <p class="mt-2 text-xs text-cyan-200">{{ statusText }}</p>
       <p class="mt-1 text-xs text-slate-300">Progress: {{ progressPct }}%</p>
     </section>
-    <section class="rounded-xl border border-cyan-900/50 bg-slate-900/60 p-4">
-      <h3 class="mb-2 text-cyan-300">Runbook</h3>
+    <section>
+      <h3 class="mb-2 text-cyan-200">Runbook</h3>
       <ul class="space-y-1 text-xs text-slate-300">
         <li>Use verified YOLO datasets only.</li>
         <li>Prefer GPU for epochs &gt; 20.</li>

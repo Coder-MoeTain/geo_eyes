@@ -11,8 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgdal-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt /app/requirements.txt
-RUN pip3 install --no-cache-dir -r requirements.txt
+COPY requirements-gpu.txt /app/requirements-gpu.txt
+
+# Install CUDA-enabled PyTorch wheels matching the CUDA base image.
+# If you change the CUDA base tag, update the cuXXX index URL accordingly.
+RUN pip3 install --no-cache-dir --upgrade pip && \
+    pip3 install --no-cache-dir --index-url https://download.pytorch.org/whl/cu123 \
+      torch==2.4.1 torchvision==0.19.1 && \
+    pip3 install --no-cache-dir -r requirements-gpu.txt
 
 COPY . /app
 

@@ -407,8 +407,15 @@ def task_status(
 
 
 @router.post("/jobs/{task_id}/cancel", tags=["jobs"])
-def cancel_job(task_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    celery_app.control.revoke(task_id, terminate=True)
+def cancel_job(
+    task_id: str,
+    force_terminate: bool = Query(default=False, description="If true, force-terminate the worker process (unsafe)."),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    # Production default: request cancellation without killing the worker process.
+    # Force termination can leave partial files/DB state if tasks are not strictly idempotent.
+    celery_app.control.revoke(task_id, terminate=bool(force_terminate))
     job = db.query(DetectionJob).filter(DetectionJob.task_id == task_id).one_or_none()
     cjob = db.query(ChangeDetectionJob).filter(ChangeDetectionJob.task_id == task_id).one_or_none()
     if job:
@@ -634,6 +641,23 @@ def train_model(
 @router.get("/training/options", tags=["models"])
 def training_options(_: User = Depends(require_any_role(["model_manager"]))):
     return {
+        "datasets": [
+            {
+                "id": "coco128.yaml",
+                "name": "COCO128 (auto-download)",
+                "description": "Ultralytics demo dataset. Automatically downloaded by YOLO training. Not aircraft-specific, but good to verify GPU training end-to-end.",
+            },
+            {
+                "id": "data/datasets/sample_training/data.yaml",
+                "name": "Sample training (local)",
+                "description": "Built from your converted datasets. Requires you to populate data/raw/ first.",
+            },
+            {
+                "id": "data/datasets/local_training/data.yaml",
+                "name": "Local training dataset",
+                "description": "Your own YOLO dataset built from data/raw/local_yolo via ai/dataset_creation.py.",
+            },
+        ],
         "methods": [
             {
                 "id": "yolov8-supervised",
